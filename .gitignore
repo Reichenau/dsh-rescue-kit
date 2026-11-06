@@ -1,0 +1,10 @@
+# generated reports — never commit these
+reports/
+*.zip
+
+# scratch
+_tmp/
+.tmp/
+
+# local edit backups (never part of the kit)
+*.bak-*
