@@ -40,8 +40,8 @@ may contain pieces of your conversation).
 ## 第二页 · 怎么用
 
 1. 把这几个文件放进任意一个空文件夹；
-2. 双击 `rescue-kit.bat`，它会问一句「屏幕上看到的是什么」，输一行或直接回车；
-3. 等二三十秒，得到 `reports\11-05 23点00分 2026.zip`；
+2. 双击 `rescue-kit.bat`，它会问一句「屏幕上看到的是什么 / What did you actually see on screen」，输一行或直接回车；
+3. 等 30–60 秒（本机实测约 36–52 秒），得到 `reports\11-05 23点00分 2026.zip`；
 4. **先打开 `index.md` 自己看一遍**，再把整个 zip 拖给另一个 AI（豆包 / Kimi / Claude 都行）。
 
 想带上屏幕上的原话：
@@ -58,7 +58,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Symptom
 
 1. Put the files in any empty folder.
 2. Double-click `rescue-kit.bat`; it asks "what do you see on screen?" — type one line or press Enter.
-3. Wait 20–30 seconds; you get `reports\11-05 23点00分 2026.zip`.
+3. Wait 30–60 seconds (about 36–52s on our test machines); you get `reports\11-05 23点00分 2026.zip`.
 4. **Open `index.md` and read it yourself first**, then drag the zip to another AI (Doubao / Kimi /
    Claude, any of them).
 
@@ -80,6 +80,6 @@ layer, delete `network.txt`, `sessions.txt` and `logs/` first — at the cost of
 - 中文 → **[README.zh-CN.md](README.zh-CN.md)**（版本记录、收集清单、不会收集什么、踩过的坑）
 - English → **[README.en.md](README.en.md)** (versions, what it collects, what it never collects, pitfalls)
 
-当前版本 / Current: **v5.0.3**（2026-11-05）
+当前版本 / Current: **v5.2**（2026-11-08）
 
 Requires / 依赖：Windows 10 / 11 + PowerShell 5.1（系统自带 / built in）。License: MIT

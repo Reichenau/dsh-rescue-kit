@@ -8,3 +8,5 @@ _tmp/
 
 # local edit backups (never part of the kit)
 *.bak-*
+
+tests/results.json

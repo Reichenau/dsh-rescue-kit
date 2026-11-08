@@ -50,13 +50,13 @@
 
 1. 把这几个文件放到任意一个空文件夹里（放哪都行，脚本靠自己的位置定位）。
 2. 双击 `rescue-kit.bat`。它会先问你一句：**屏幕上看到的是什么？**（输一行，直接回车跳过也行）
-3. 等二三十秒，窗口里每做完一步打一行，最后出现：
+3. 等 30–60 秒（本机实测约 36–52 秒），窗口里每做完一步打一行，最后出现：
 
    ```
    OK C:\...\reports\11-04 20点18分 2026.zip (79.6 KB)
    ```
 
-4. 打开 `reports\`，**先自己看一眼 `index.md`**，再把整个 zip 拖给另一个 AI。
+4. 打开 `reports\`，**先自己看一眼 `index.md`**，再把整个 zip 拖给另一个 AI。旧 zip 可以直接删，保留最新一份即可。
 
 zip 的名字就是生成时间：**日期 几点几分 年份**。同一分钟跑两次不会互相覆盖，
 第二份会自动变成 `... (2).zip` —— 出事的时候人容易手抖连点两下，少一份现场就白采了。
@@ -76,19 +76,75 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Symptom
 
 这句话会写进 `index.md` 开头。诊断的人第一句就知道该往哪找，而不是从头猜。
 
-双击 `.bat` 时那句提示就是这么做的：它把你说的话放进环境变量 `DSH_RESCUE_SYMPTOM`，
-不走 `echo %SYMPTOM% > 文件` —— 那句话里只要有一个 `&` `|` `<` `>` `%`，cmd 就会把它
-截断或者当成语法。脚本再自己嗅探编码去读（中文控制台是 GBK、UTF-8 终端是 UTF-8，
-两种都不会变成乱码）。命令行里也可以用 `-SymptomFile <路径>` 走同一条路。
+双击 `.bat` 时那句提示就是这么做的：提问在 PowerShell 侧用 `Read-Host` 完成（Unicode 原生，
+中文不会变乱码），不再经过 cmd 的 `set /p` 和 `chcp`，GBK 控制台也照样能输。命令行里也可以用
+`-SymptomFile <路径>` 走同一条路。
 
 开跑前脚本还会查一下 `reports\` 所在盘还剩多少空间：不足 200 MB 就当场喊一声。
-采集要 30 秒，等它跑完才因为磁盘满打包失败，是最冤的一种白跑。
+采集要 30–60 秒，等它跑完才因为磁盘满打包失败，是最冤的一种白跑。
 
 ---
 
 ---
 
 ## 版本
+
+**v5.2** · 2026-11-08（首个正式版）
+
+对比上一次发布的 v5.0.3，这一版把「能取证」升级成了「能看懂、能自己复现」：
+
+- **会体检打分了**：压缩包里多了 `checks.json`，`index.md` 顶部直接给一张 PASS / WARN / FAIL 表——不用翻几十个文件，先看几行就知道哪出问题。
+- **会照着你的配置重跑一遍**：对每个能跑命令行的 profile 执行 `dsh --profile <名字> --dump-config`，把 YAML 报错、缺失插件（比如 `patch: entry "tool-ralph" not found`）直接抓出来。这是这次最大的升级。
+- **更会认钥匙**：除了 `sk-`、`AKIA` 这些老形态，新增 `ak-`、`org-`、`lin_api_`、`xai-` 等新 token；打包前还会把整个包再扫一遍，免得把 API key 带出去。
+- **抓不到输出会自动换通道**：cmd 卡住或没输出时，自动用 PowerShell 再试一次；30 秒还不回来就杀掉进程，不会把整个包卡死。dump 文件头会写清楚走哪条通道、有没有重试、退出码是多少。
+- **中文提问不炸弹了**：提问挪到 PowerShell 里（中英双语），不再经过 cmd 的 `set /p` 和 `chcp`，GBK 控制台也能正常输入；真乱码了会记一条警告。
+- **会主动喊结果**：跑完在窗口里固定打印 `checks: X ok / Y warn / Z fail`；如果窗口被强关、只留下 `_tmp` 目录，bat 会提示你手工打包。
+- **现场更细**：系统盘 / DSH 所在盘 / 报告盘三块磁盘剩余空间都报；崩溃转储写清楚 48 小时窗口内外各有几个；desktop 前端和 CLI 版本不一致会提示。
+- **自带 23 条回归测试**：仓库里的 `tests/` 用已知 bug 当探针，改一处不会悄悄弄坏另一处（本轮 23 checks / 0 mismatch）。
+
+**v5.1.5** · 2026-11-08
+
+Marvis 对 v5.1.4 的复评是 **ship（0 P0 / 0 P1）**，顺手补的两条 P2：
+
+- **symptom 告警口径统一**：交互中直接回车跳过，现在也记一条 `symptom` WARN（detail 区分 `skipped at the prompt` 与 `non-interactive run`），下游不再分不清「用户主动跳过」和「工具没问」。
+- **强杀后的 `_tmp` 提示**：bat 开头先说明「窗口中途被关，旁边的 `_tmp` 请手工打包」；正常结尾也会检查 `_tmp` 是否还在，在就提醒。
+- **说明书措辞**：明确 bat 结尾会打开 `reports` 文件夹，但不会自动打开具体报告文件。
+
+**v5.1.4** · 2026-11-08
+
+按 Marvis 对 v5.1.3 的黑盒复评修的一轮（0 P0 / 2 P1 / 7 P2）：
+
+- **`exit_note` 只在 stdout 真为空时写**：旧条件是「exit code 为 0 且状态非 ok」，会把「有正文、只有 stderr 警告」的 profile 误标成 `stdout was empty`（bili-duty 就是 417 行正文配这句）。现在只看 stdout 是否为空，并在文案里带上真实 exit code。
+- **dump 头新增 `retry`**：`0` 或 `1 (powershell empty -> cmd)`，不用再从 `channel` 里猜有没有重试过。
+- **中文提问**：`Read-Host` 提示改成中英双语（PowerShell 侧，Unicode 安全）。
+- **非交互运行补 `symptom` WARN**：没有 `-Symptom`、stdin 又被重定向时不再静默丢失，checks 里会记一条。
+- **截断标注**：dump 分隔行改成 `first 250 of N lines`，不再和头部的 396/417/1185 行打架。
+- **README 旧文案对齐**：删掉「bat 里 `chcp 65001` / `set /p` / `DSH_RESCUE_SYMPTOM`」这些已成为历史的话。
+- **reports 清理提示**：旧 zip 可直接删，保留最新一份即可。
+
+**v5.1.3** · 2026-11-08
+
+按 Marvis 对 v5.1.2 的黑盒复评修的一轮，重点是「CLI 取证」这条命根子：
+
+- **dump-config 主通道换成 PowerShell（`dsh.ps1`）**：Marvis 机器上经 `cmd.exe` / `dsh.cmd` 的调用返回 0 字节，PowerShell 直调 `dsh --profile <p> --dump-config` 稳定 407 行。现在先走 PowerShell，空输出才用 cmd 重试一次；两条都空才判 FAIL，并写明「这是 kit 抓不到，不是你装坏了」。
+- **真超时与真清理**：两条通道都强制 30 秒，超时按进程树杀（原来只杀 `cmd.exe`，node 子进程可能还挂着）。
+- **dump 文件头补通道字段**：`cli_exe` / `channel`（含是否重试）/ `exit_note`，不用再对着 `exit_code=0` 猜。
+- **版本同源采集**：CLI 版本优先走 `dsh.ps1`，读不到就在 `system.txt` 写 `dsh_cli = (not detected)`，version 检查对应记 WARN（不再假装 PASS）。
+- **凭据复扫常驻**：`credentials` 检查每次都会出现（命中记 WARN，未命中记 PASS），不再「只在命中时才有一行」。
+- **crash dump 摘要补齐**：汇总行同时报「48h 内无关数」和「磁盘上无关总数（含窗口外/无名 dump）」，不再出现明细 5 个、摘要 3 个。
+- **中文症状不再变乱码**：提问移到 PowerShell 的 `Read-Host`（Unicode 原生），bat 保持纯 ASCII；PS 侧检测到 U+FFFD 仍会记一条 `symptom` WARN，并提示改用 `-Symptom`。
+- **控制台也报汇总**：打包后多打一行 `checks: X ok / Y warn / Z fail`，有 FAIL 时提示先看 `index.md`。
+
+**v5.1.2** · 2026-11-08
+
+从社区的 `dsh-doctor` 借了两样东西，但没抄它的自动修复——急救包还是只读取证，只把「判断」做得更硬：
+
+- **结构化 checks**：每项检查记 `kind / status / detail / fix_hint`，落成 `checks.json`；`index.md` 顶部加 PASS / WARN / FAIL 表和 `N passed, N warnings, N failures` 这样的摘要。
+- **主动复现配置错误**：对每个能 CLI 复现的 profile 跑 `dsh --profile <p> --dump-config`，把首个 `Error:` / `YAMLException:` 行顶进 triage；`desktop` 由 Electron 独占，跳过并记 warn。
+- **exit code 不可信就以 stderr 为准**：`dsh.cmd` 不传 node 的退出码（坏 YAML 也报 0），所以按 stderr 的特征判 FAIL / WARN；`dump-config-*.txt` 里会记 `exit_note`。
+- **原始输出不再进包**：dump 的 `.out/.err` 重定向到临时目录、脱敏写入后即删；zip 里只有打过码的 `dump-config-*.txt`。
+- **假 FAIL 清理**：bundle 解析交给 compose 结果，不再按 `profiles\<name>\node_modules` 误判；triage 不再把 dump 文件里的 `timeoutMs` 当超时。
+- 环境检查更细：`package.json` 可解析、`link:` 依赖真存在、compose 结果、磁盘余量、crash dump。
 
 **v5.0.3** · 2026-11-05
 
@@ -239,7 +295,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Minimal
 ```
 
 `-Minimal` 只保留**命令行里带** `dsh` / `deepseek` / `electron` / `cordis` 的进程
-（按命令行匹配，不是按进程名），`processes.tsv` 从两百多行缩到几十行 —— 别的软件在跑什么，跟这次故障无关。
+（按命令行匹配，不是按进程名），`processes.tsv` 从两百多行缩到几十行 —— 别的软件在跑什么，跟这次故障无关。（只影响进程表；network / timeline / 环境变量照常收集。）
 
 ---
 

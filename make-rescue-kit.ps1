@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 <#
-  DSH Rescue Kit  v5.0.3
+  DSH Rescue Kit  v5.1.1
   =======================
   Snapshot whatever your AI agent workspace looked like when it broke, into one
   zip. Hand the zip to another AI (or a human) and it can read the evidence
@@ -60,18 +60,28 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$KitVersion = '5.0.3'
+$KitVersion = '5.2'
 # One clock for the whole kit. "captured" must mean "when the evidence was
-# gathered", not "when the zip was written two minutes later".
-$CapturedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+# gathered", not "when the zip was written two minutes later". ISO 8601 keeps
+# timezone offset, so two captures from different zones stay comparable.
+$CapturedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
 
 # --- where things live -------------------------------------------------------
 
 # DSH home: honour DSH_HOME, else the default under the user profile.
 # No hard-coded user name, so this works on any machine.
+# A host started from a service context can have neither variable. In that case
+# a sentinel keeps every later Join-Path/Test-Path working and the report still
+# explains the real problem instead of dying inside Test-Path $null.
+$dshHomeMissing = $false
 $Dsh = $env:DSH_HOME
 if ([string]::IsNullOrWhiteSpace($Dsh)) {
-    $Dsh = Join-Path $env:USERPROFILE '.dsh'
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $dshHomeMissing = $true
+        $Dsh = Join-Path ([System.IO.Path]::GetTempPath()) ('dsh-home-missing-' + $PID)
+    } else {
+        $Dsh = Join-Path $env:USERPROFILE '.dsh'
+    }
 }
 
 # $PSScriptRoot is the reliable one: $PSCommandPath is empty when the script is
@@ -80,6 +90,7 @@ $KitDir = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($KitDir)) { $KitDir = Split-Path -Parent $PSCommandPath }
 if ([string]::IsNullOrWhiteSpace($KitDir)) { $KitDir = (Get-Location).Path }
 $OutDir = Join-Path $KitDir 'reports'
+$OutDrive = Split-Path -Qualifier $OutDir
 
 $Now     = Get-Date
 $Stamp   = $Now.ToString('yyyyMMdd-HHmmss')
@@ -131,9 +142,9 @@ try {
         if ($outDi.IsReady) { $outFreeMB = [math]::Round($outDi.AvailableFreeSpace / 1MB, 0) }
     }
 } catch { }
-if ($outFreeMB -ne $null -and $outFreeMB -lt 200) {
+if ($null -ne $outFreeMB -and $outFreeMB -lt 200) {
     Write-Host ''
-    Write-Host ("  WARNING: only {0} MB free on the drive that holds the report." -f $outFreeMB) -ForegroundColor Yellow
+    Write-Host ("  WARNING: only {0} MB free on {1} (the drive that holds the report)." -f $outFreeMB, $OutDrive) -ForegroundColor Yellow
     Write-Host ("           {0}" -f $OutDir) -ForegroundColor Yellow
     Write-Host '           The collection may finish and the zip still fail to write.' -ForegroundColor Yellow
     Write-Host '           Free some space, or move this whole folder to another drive first.' -ForegroundColor Yellow
@@ -142,8 +153,9 @@ if ($outFreeMB -ne $null -and $outFreeMB -lt 200) {
 
 # --- helpers -----------------------------------------------------------------
 
-# Progress. The run takes 25-35 seconds; a silent console reads as a hang, and
-# people kill it right before the part that matters.
+# Progress. The run takes 35-50 seconds now (it also boots the real composer
+# once per profile); a silent console reads as a hang, and people kill it right
+# before the part that matters.
 function Step([string]$msg) { Write-Host ('  ' + $msg) -ForegroundColor DarkGray }
 
 # Joining a null folder variable throws a PARAMETER BINDING error, which is
@@ -432,6 +444,24 @@ if ([string]::IsNullOrWhiteSpace($Symptom) -and $SymptomFile -and (Test-Path -Li
     } catch { }
 }
 
+# Ask for the symptom here, in PowerShell, not in the .bat: cmd.exe's
+# "set /p" plus "chcp 65001" does not round-trip non-ASCII text reliably
+# (that is how the whole answer turned into U+FFFD on one review box), while
+# Read-Host is Unicode-native. Skipped when stdin is redirected so scripts
+# and automated runs never block on a prompt.
+if ([string]::IsNullOrWhiteSpace($Symptom) -and -not [Console]::IsInputRedirected) {
+    try {
+        Write-Output ''
+        Write-Output 'What did you actually see on screen? (one line, or press Enter to skip)'
+        Write-Output '屏幕上看到的是什么？（一行；直接回车跳过）'
+        Write-Output '  e.g. the window went white / the chat stopped replying / it closes on start'
+        Write-Output '  例：窗口白屏 / 消息发不出去 / 一启动就闪退'
+        $answer = [string](Read-Host '> ')
+        if (-not [string]::IsNullOrWhiteSpace($answer)) { $Symptom = $answer.Trim() }
+        Write-Output ''
+    } catch { }
+}
+
 # A rescue zip is meant to be shared, so never ship credentials in it.
 # Command lines and log lines are the two places keys leak into by accident.
 function Mask-Secrets([string]$s) {
@@ -459,6 +489,12 @@ function Mask-Secrets([string]$s) {
         @{ p = '(?i)hf_[A-Za-z0-9]{20,}';                          r = '***' },
         @{ p = '(?i)xox[baprs]-[A-Za-z0-9\-]{10,}';                r = '***' },
         @{ p = '(?i)(?<![A-Z0-9])AKIA[0-9A-Z]{16}';                r = '***' },
+        # Account / access identifiers that leak through provider error bodies:
+        # Moonshot prints "ak-<id>" and "org-<id>" verbatim in 429 responses.
+        @{ p = '(?i)(?<![A-Za-z0-9_])ak-[A-Za-z0-9_\-]{16,}';     r = '***' },
+        @{ p = '(?i)(?<![A-Za-z0-9_])org-[0-9a-f]{16,}';          r = '***' },
+        @{ p = '(?i)lin_api_[A-Za-z0-9]{20,}';                    r = '***' },
+        @{ p = '(?i)xai-[A-Za-z0-9_\-]{20,}';                     r = '***' },
         # JWT: header.payload.signature, all base64url
         @{ p = '(?i)eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'; r = '***' },
         # auth headers and url userinfo
@@ -533,6 +569,31 @@ function Mask-Secrets([string]$s) {
     return $s
 }
 
+# --- checks -----------------------------------------------------------------
+# A short list of statements that can be checked without a human reading logs.
+# status: ok = nothing to do; warn = works, but the evidence is thinner than it
+# should be; fail = something in the installation is wrong right now.
+# The list is rendered twice: as a table in index.md and as checks.json for a
+# machine reader. Keeping one source means the two can never disagree.
+$script:Checks = New-Object System.Collections.ArrayList
+
+function Add-Check([string]$kind, [string]$status, [string]$detail, [string]$fixHint = '') {
+    [void]$script:Checks.Add([pscustomobject][ordered]@{
+        kind    = $kind
+        status  = $status
+        detail  = [string]$detail
+        fixHint = [string]$fixHint
+    })
+}
+
+# Long single-line details turn the checks table into a wall. The full text is
+# still in the evidence file the check points at.
+function Short([string]$s, [int]$n) {
+    $s = ([string]$s) -replace "`r?`n", ' '
+    if ($s.Length -gt $n) { return $s.Substring(0, $n) + '...' }
+    return $s
+}
+
 # Directory sizes under a root. Skipping the heavy generated subtrees matters:
 # dsh-runtimes and electron hold hundreds of MB in tens of thousands of tiny
 # files, take seconds to walk, and say nothing about a crash.
@@ -587,14 +648,14 @@ $gpuLine = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
 $sys += "gpu         = $(if ($gpuLine) { $gpuLine } else { '(unavailable)' })"
 $sys += "user        = %USERNAME%"
 $sys += "memory_gb   = $([math]::Round($cs.TotalPhysicalMemory / 1GB, 1))"
-$sys += "boot_time   = $($os.LastBootUpTime)"
+$sys += "boot_time   = $(try { ([datetime]$os.LastBootUpTime).ToString('yyyy-MM-ddTHH:mm:sszzz') } catch { '' })"
 $sys += "powershell  = $($PSVersionTable.PSVersion)"
 $sys += "dsh_home    = $Dsh"
 $sys += "dsh_home_exists = $(Test-Path $Dsh)"
 
 # A wrong clock breaks TLS and every API call in confusing ways, and nobody
 # thinks to check it.
-$sys += "utc_now     = $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))"
+$sys += "utc_now     = $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
 
 # Agent version. The desktop app ships a runtime manifest next to its exe, and
 # whether a warning is a real bug or a known limitation almost always depends on
@@ -628,6 +689,24 @@ foreach ($d in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)
         $sys += ("{0}: free={1:N1}GB used={2:N1}GB" -f $d.Name, ($d.Free / 1GB), ($d.Used / 1GB))
     }
 }
+# The CLI and the desktop app are separate builds, and "works in the terminal,
+# fails in the app" is usually a version mismatch. Detect the CLI version while
+# the environment is still at hand; the version check compares them later.
+$cliVer = ''
+$cliCmd = $null
+foreach ($c in @(Get-Command 'dsh' -ErrorAction SilentlyContinue)) {
+    if ([string]$c.Source -match '(?i)\.ps1$') { $cliCmd = $c; break }
+}
+if (-not $cliCmd) { $cliCmd = Get-Command 'dsh.cmd' -ErrorAction SilentlyContinue }
+if (-not $cliCmd) { $cliCmd = Get-Command 'dsh.exe' -ErrorAction SilentlyContinue }
+if ($cliCmd) {
+    try {
+        $cliOut = @(& ([string]$cliCmd.Source) --version 2>&1 |
+            ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        if ($cliOut.Count -gt 0) { $cliVer = [string]$cliOut[0] }
+    } catch { }
+}
+if ($cliVer) { $sys += "dsh_cli     = $cliVer" } else { $sys += "dsh_cli     = (not detected)" }
 Add-Text 'system.txt' (Mask-Secrets ($sys -join "`r`n"))
 
 # Environment variables are among the most common causes of "the agent suddenly
@@ -715,7 +794,7 @@ if (Test-Path $Dsh) {
     $tlFiles |
         Where-Object { $_.LastWriteTime -gt $since48 -and $_.FullName -notmatch '\\node_modules\\' } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 25 |
-        ForEach-Object { $tl += ("{0}`t{1}`t{2:N1} KB" -f $_.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'), $_.FullName, ($_.Length / 1KB)) }
+        ForEach-Object { $tl += ("{0}`t{1}`t{2:N1} KB" -f $_.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:sszzz'), $_.FullName, ($_.Length / 1KB)) }
 }
 Add-Text 'timeline.txt' (Mask-Secrets ($tl -join "`r`n"))
 
@@ -861,6 +940,227 @@ if (Test-Path $cred) {
     $credLines += 'exists   = no'
 }
 Add-Text 'credentials-meta.txt' ($credLines -join "`r`n")
+
+Step 'reproducing config compose (dump-config)'
+
+# --- 4b. reproduce config compose (dump-config) ------------------------------
+# A host that dies while composing cordis.patch.yml never writes a crash log
+# that names the line; reading the YAML ourselves only guesses. `dsh
+# --dump-config` runs the real composer and prints the exact first error, which
+# is the one line a reader needs. Read-only: it composes and exits.
+#
+# `desktop` is skipped on purpose: the Electron app owns that profile and the
+# CLI refuses it with "profile is managed exclusively by the Electron
+# application". The other profiles exercise the same patch parser and bundle
+# resolver, so a broken patch still reproduces there.
+
+$dumpResults = @()
+# Raw stdout/stderr live OUTSIDE $Tmp: they are unmasked, and anything left in
+# $Tmp is zipped verbatim. Only the masked summary goes into the report.
+$dumpScratch = Join-Path $TmpRoot ('dump-' + $PID)
+$dumpScratchOk = $true
+try { [void][System.IO.Directory]::CreateDirectory((LongPath $dumpScratch)) } catch { $dumpScratchOk = $false; $dumpScratch = $null }
+$dshCmd = $null
+foreach ($c in @(Get-Command 'dsh' -ErrorAction SilentlyContinue)) {
+    if ([string]$c.Source -match '(?i)\.ps1$') { $dshCmd = $c; break }
+}
+if (-not $dshCmd) { $dshCmd = Get-Command 'dsh.cmd' -ErrorAction SilentlyContinue }
+if (-not $dshCmd) { $dshCmd = Get-Command 'dsh.exe' -ErrorAction SilentlyContinue }
+$dumpProfiles = @()
+$dshProfilesRoot = Join-Path $Dsh 'profiles'
+if (Test-Path $dshProfilesRoot) {
+    $dumpProfiles = @(Get-ChildItem $dshProfilesRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'node_modules' } | Sort-Object Name)
+}
+
+# Two capture channels. cmd.exe can swallow a child's stdout on some hosts
+# (Marvis reproduced it: dsh --dump-config printed 0 bytes through cmd and a
+# 407-line tree through PowerShell), so PowerShell is the primary channel and
+# cmd is only a retry. Both get a hard 30s timeout and a process-tree kill.
+function Stop-ProcessTree([int]$ProcId) {
+    try {
+        foreach ($k in @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $ProcId) -ErrorAction SilentlyContinue)) {
+            Stop-ProcessTree ([int]$k.ProcessId)
+        }
+    } catch { }
+    try { Stop-Process -Id $ProcId -Force -ErrorAction SilentlyContinue } catch { }
+}
+function Invoke-DshCompose([string]$CliPath, [string]$ProfileName, [string]$OutFile, [string]$ErrFile, [string]$Channel) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $rc = -1
+    $timedOut = $false
+    $runnerPath = $null
+    try {
+        if ($Channel -eq 'powershell') {
+            $psExe = Join-Path $PSHOME 'powershell.exe'
+            if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+            $cmd = "& '" + ($CliPath -replace "'", "''") + "' --profile '" + ($ProfileName -replace "'", "''") + "' --dump-config"
+            $proc = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $cmd) -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile -NoNewWindow -PassThru
+        } else {
+            $runnerName = 'run-' + ($ProfileName -replace '[^\w.-]', '_') + '.cmd'
+            $runnerPath = Join-Path $dumpScratch $runnerName
+            $runnerBody = @(
+                '@echo off',
+                ('call "' + $CliPath + '" --profile "' + ($ProfileName -replace '%', '%%') + '" --dump-config')
+            )
+            [System.IO.File]::WriteAllLines($runnerPath, [string[]]$runnerBody, (New-Object System.Text.ASCIIEncoding))
+            $proc = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/c', ('"' + $runnerPath + '"')) -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile -NoNewWindow -PassThru
+        }
+        if (-not $proc.WaitForExit(30000)) {
+            $timedOut = $true
+            try { Stop-ProcessTree ([int]$proc.Id) } catch { }
+            try { [void]$proc.WaitForExit(5000) } catch { }
+        }
+        if (-not $timedOut) {
+            try { $rc = [int]$proc.ExitCode } catch { $rc = -1 }
+        }
+    } catch {
+        $rc = -2
+    } finally {
+        $sw.Stop()
+        if ($runnerPath) { try { Remove-Item -LiteralPath $runnerPath -Force -ErrorAction SilentlyContinue } catch { } }
+    }
+    [pscustomobject]@{ rc = $rc; timedOut = $timedOut; seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2); channel = $Channel }
+}
+
+if (-not $dumpScratchOk) {
+    # Falling back to $Tmp would put unmasked composer output inside the zip.
+    Add-Check 'config compose' 'fail' 'cannot create a scratch folder for dsh output; compose reproduction skipped' 'Check free space and permissions on the kit folder.'
+} elseif (-not $dshCmd) {
+    Add-Check 'config compose' 'warn' 'dsh CLI not found on PATH; active config reproduce skipped' 'Run the kit from a terminal where `dsh --version` works, or add the DSH CLI to PATH.'
+} elseif ($dumpProfiles.Count -eq 0) {
+    Add-Check 'config compose' 'fail' ('no profiles under ' + (Mask-Secrets $dshProfilesRoot)) 'Check DSH_HOME; the agent has never been started with this home.'
+} else {
+    $dumped = 0
+    foreach ($pd in $dumpProfiles) {
+        if ($dumped -ge 6) { break }
+        if ($pd.Name -eq 'desktop') {
+            Add-Check 'config compose' 'warn' 'profile desktop: not reproducible from CLI (managed by the Electron app)' 'Start the app once and read its crash log, or reproduce the same patch under another profile.'
+            continue
+        }
+        if (-not (Test-Path (Join-Path $pd.FullName 'cordis.patch.yml')) -and -not (Test-Path (Join-Path $pd.FullName 'cordis.yml'))) {
+            Add-Check 'config compose' 'warn' ('profile ' + $pd.Name + ': no cordis config, skipped') ''
+            continue
+        }
+
+        $outFile = Join-Path $dumpScratch ('dump-config-' + $pd.Name + '.out')
+        $errFile = Join-Path $dumpScratch ('dump-config-' + $pd.Name + '.err')
+        $dshPath = [string]$dshCmd.Source
+        # PowerShell first: it is the channel that returns output where cmd.exe
+        # silently swallows it. cmd is retried once, only when PS came back empty.
+        $capture = Invoke-DshCompose -CliPath $dshPath -ProfileName $pd.Name -OutFile $outFile -ErrFile $errFile -Channel 'powershell'
+        $timedOut = $capture.timedOut
+        $rc = $capture.rc
+        $swTotal = $capture.seconds
+        $channelUsed = 'powershell'
+        $retryUsed = $false
+        $psOutText = ''
+        try { if (Test-Path $outFile) { if ((Get-Item $outFile).Length -lt 8MB) { $psOutText = Read-TextAuto $outFile 0 } } } catch { }
+        if (-not $timedOut -and [string]::IsNullOrWhiteSpace($psOutText) -and $capture.rc -ne -2) {
+            $retryUsed = $true
+            $second = Invoke-DshCompose -CliPath $dshPath -ProfileName $pd.Name -OutFile $outFile -ErrFile $errFile -Channel 'cmd'
+            $timedOut = $second.timedOut
+            $rc = $second.rc
+            $swTotal = [math]::Round($swTotal + $second.seconds, 2)
+            $channelUsed = 'cmd'
+        }
+        $dumped++
+
+        $outText = ''
+        $errText = ''
+        try { if (Test-Path $outFile) { if ((Get-Item $outFile).Length -lt 8MB) { $outText = Read-TextAuto $outFile 0 } else { $outText = '<stdout larger than 8 MB; omitted>' } } } catch { }
+        try { if (Test-Path $errFile) { if ((Get-Item $errFile).Length -lt 8MB) { $errText = Read-TextAuto $errFile 0 } else { $errText = '<stderr larger than 8 MB; omitted>' } } } catch { }
+
+        $outEmpty = [string]::IsNullOrWhiteSpace($outText)
+        $outLines = @($outText -split "`r?`n" | Where-Object { $_.Trim() })
+        $errLines = @($errText -split "`r?`n" | Where-Object { $_.Trim() })
+        # dsh.cmd swallows node's exit code (cmd /c dsh.cmd ... reports 0 even on
+        # a YAML parse error), so stderr is the authoritative signal; the exit
+        # code is only a bonus. A real failure prints a line starting with
+        # "Error:" / "YAMLException:"; the "throw new Error(...)" source line
+        # above it is noise.
+        $firstErr = ''
+        foreach ($line in $errLines) {
+        # `dsh:` is how the CLI prefixes its own failures. The `patch: ...` lines
+        # it also emits are warnings, not fatal (e.g. a removed bundle entry), so
+        # lines that carry `patch: entry ... not found` are excluded.
+        $patchWarn = $line -match '(?i)\bpatch:\s+entry\b.*\bnot found\b'
+        if ($line -match '^\s*(Error|YAMLException|SyntaxError|TypeError|ReferenceError|RangeError):\s' -or
+            (-not $patchWarn -and $line -match '^\s*dsh:\s+(?i:.*\b(failed|error|cannot|unable|invalid|parse|not found)\b)')) {
+            $firstErr = $line.Trim(); break
+        }
+        }
+        if (-not $firstErr) {
+            foreach ($line in $errLines) {
+                if ($line -match '(?i)failed to parse|Cannot find module|MODULE_NOT_FOUND|Unexpected token') { $firstErr = $line.Trim(); break }
+            }
+        }
+        $matchedErr = $firstErr
+        $looksFatal = ($matchedErr -ne '') -or ($rc -ne 0)
+        if (-not $looksFatal -and $errLines.Count -gt 0 -and $outLines.Count -lt 5) { $looksFatal = $true }
+        if (-not $firstErr -and $errLines.Count -gt 0) { $firstErr = $errLines[0].Trim() }
+
+        $st = 'ok'
+        $detail = ''
+        if ($timedOut) {
+            $st = 'fail'
+            $detail = 'timed out after 30s'
+        } elseif ($looksFatal) {
+            $st = 'fail'
+            $detail = (Short $firstErr 180)
+        } elseif ($errLines.Count -gt 0) {
+            $st = 'warn'
+            $detail = (Short $firstErr 180)
+        } elseif ($outEmpty) {
+            # Both channels were already tried above. An empty capture is a kit
+            # limitation, not proof that the install is broken: say so instead of
+            # pointing the reader at an empty dump file.
+            $st = 'fail'
+            $detail = 'compose output not captured (0 lines via powershell and cmd channels)'
+        } else {
+            $detail = ('' + $outLines.Count + ' lines composed, no warnings')
+        }
+        $composeHint = ''
+        if ($st -ne 'ok' -and $outLines.Count -eq 0) {
+            $composeHint = 'Run `dsh --profile ' + $pd.Name + ' --dump-config` in a PowerShell window by hand; if that prints a tree, this is a kit capture failure, not proof that your install is broken.'
+        } elseif ($st -ne 'ok') {
+            $composeHint = 'Open dump-config-' + $pd.Name + '.txt; the first error line is at the top.'
+        }
+        Add-Check ('profile ' + $pd.Name + ' · compose') $st $detail $composeHint
+
+        $dumpBody = @()
+        $dumpBody += 'profile    = ' + $pd.Name
+        $dumpBody += 'command    = dsh --profile ' + $pd.Name + ' --dump-config'
+        $dumpBody += 'cli_exe    = ' + $dshPath
+        $dumpBody += 'channel    = ' + $channelUsed + $(if ($retryUsed) { ' (powershell was empty; retried via cmd)' } else { '' })
+        $dumpBody += 'retry      = ' + $(if ($retryUsed) { '1 (powershell empty -> cmd)' } else { '0' })
+        $dumpBody += 'exit_code  = ' + $rc
+        if ($outEmpty) { $dumpBody += 'exit_note  = stdout was empty (exit code ' + $rc + '); wrapper exit codes are unreliable, read channel/stderr' }
+        $dumpBody += 'timed_out  = ' + $timedOut
+        $dumpBody += 'duration   = ' + $swTotal + 's'
+        $dumpBody += 'stdout     = ' + $outLines.Count + ' lines'
+        $dumpBody += 'stderr     = ' + $errLines.Count + ' lines'
+        $dumpBody += 'first_error= ' + $firstErr
+        $dumpBody += ''
+        if ($errLines.Count -gt 0) {
+            $dumpBody += '== stderr =='
+            $dumpBody += (@($errLines | Select-Object -First 80) -join "`r`n")
+            $dumpBody += ''
+        }
+        $dumpBody += ('== stdout (first 250 of ' + $outLines.Count + ' lines; the full tree is not needed for triage) ==')
+        $dumpBody += (@($outLines | Select-Object -First 250) -join "`r`n")
+        Add-Text ('dump-config-' + $pd.Name + '.txt') ($dumpBody -join "`r`n")
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+
+        $dumpResults += [pscustomobject]@{
+            profile = $pd.Name
+            status  = $st
+            rc      = $rc
+            first   = $firstErr
+            seconds = $swTotal
+        }
+    }
+}
 
 Step 'sessions + conversation tail'
 
@@ -1233,20 +1533,38 @@ if ($found -eq 0) {
 }
 
 # Crash dumps: the files themselves are hundreds of MB, but the list answers
-# "did it actually crash" without shipping them.
+# "did it actually crash" without shipping them. Group by process: a dump from
+# adb.exe says nothing about DSH and used to inflate the "DSH crashed" warning.
 $dumpLines = @()
 $dumpRoots = @()
+$dumpEntries = @()
 if ($localAppDir) { $dumpRoots += (Join-Path $localAppDir 'CrashDumps') }
 if ($appDataDir)  { $dumpRoots += (Join-Path $appDataDir  '@deepseek-ai\dsh-desktop\Crashpad\reports') }
 foreach ($dr in $dumpRoots) {
+    # Dumps under DSH's own Crashpad root are DSH crashes even when Crashpad
+    # names the file after its report UUID instead of the executable.
+    $isDshRoot = ($dr -like '*dsh-desktop\Crashpad*')
     if (Test-Path $dr) {
         $dumpLines += "[$dr]"
-        Find-Files $dr @('*') 99 |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 15 |
-            ForEach-Object { $dumpLines += ("  {0}`t{1:N1} MB`t{2}" -f $_.Name, ($_.Length / 1MB), $_.LastWriteTime) }
+        $items = @(Find-Files $dr @('*') 99 | Sort-Object LastWriteTime -Descending | Select-Object -First 30)
+        if ($items.Count -eq 0) { $dumpLines += '  (no dump files)' }
+        foreach ($it in $items) {
+            $procName = if ($it.Name -match '(?i)^(.+?\.exe)\.') { $Matches[1] } else { ($it.Name -split '\.')[0] }
+            if ($isDshRoot) { $procName = 'dsh' }
+            $dumpLines += ("  {0}`t{1:N1} MB`t{2}`t{3}" -f $it.Name, ($it.Length / 1MB), $it.LastWriteTime, $procName)
+            $dumpEntries += [pscustomobject]@{ Process = $procName; Time = $it.LastWriteTime; Name = $it.Name }
+        }
     } else {
         $dumpLines += "[$dr] (missing)"
     }
+}
+$dshRelatedDumps = @($dumpEntries | Where-Object { $_.Process -match '(?i)^(dsh|deepseek|electron|node)(\.|$)' })
+$otherDumps = @($dumpEntries | Where-Object { $_.Process -notmatch '(?i)^(dsh|deepseek|electron|node)(\.|$)' })
+$dumpLines += ''
+$dumpLines += ('DSH-related dumps: {0}' -f $dshRelatedDumps.Count)
+if ($otherDumps.Count -gt 0) {
+    $otherNames = @($otherDumps | Group-Object Process | ForEach-Object { '{0} x{1}' -f $_.Name, $_.Count })
+    $dumpLines += ('Unrelated dumps (not counted as DSH): ' + ($otherNames -join ', '))
 }
 if ($dumpLines.Count -eq 0) { $dumpLines = @('no crash dump directories found') }
 Add-Text 'crash-dumps.txt' ($dumpLines -join "`r`n")
@@ -1451,6 +1769,243 @@ if ($IncludeMemory) {
     }
 }
 
+# --- 8b. checks: the machine-checkable part of the report --------------------
+# Everything below answers one question without reading a log: is this install
+# internally consistent? These are the same checks a maintainer runs by hand
+# first: does the bundle list resolve, do the link: dependencies still exist,
+# does the real composer accept the patch, is there room on disk.
+
+$profileDirs = @()
+if (Test-Path $dshProfilesRoot) {
+    $profileDirs = @(Get-ChildItem $dshProfilesRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne 'node_modules' } | Sort-Object Name)
+}
+
+# --- post-write credential sweep --------------------------------------------
+# The per-file masking above is best-effort by pattern. Before packaging, scan
+# everything that is going into the zip once more and re-mask any remaining
+# credential shape. A rescue kit that leaks a key is worse than one that misses
+# a check, so this belt is not optional.
+$credSweepHits = @()
+$credSweepTotal = 0
+$credSweepRe = '(?i)(?<![A-Za-z0-9])(sk-[A-Za-z0-9_\-]{20,}|ak-[A-Za-z0-9_\-]{16,}|org-[0-9a-f]{16,}|AIza[0-9A-Za-z_\-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|hf_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,}|lin_api_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})'
+try {
+    foreach ($cf in @(Get-ChildItem -LiteralPath (LongPath $Tmp) -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        if ($cf.Length -gt 8MB) { continue }
+        if ($cf.Extension -notmatch '^\.(txt|json|tsv|md|log|ndjson|jsonl)$') { continue }
+        $raw = Read-TextAuto $cf.FullName 0
+        $mm = [regex]::Matches($raw, $credSweepRe)
+        if ($mm.Count -gt 0) {
+            $credSweepHits += $cf.Name
+            $credSweepTotal += $mm.Count
+            $maskedRaw = Mask-Secrets $raw
+            [System.IO.File]::WriteAllText((LongPath $cf.FullName), $maskedRaw, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    }
+} catch { }
+if ($credSweepHits.Count -gt 0) {
+    Add-Check 'credentials' 'warn' ('masked {0} credential-like string(s) again in {1} file(s) after the first pass' -f $credSweepTotal, $credSweepHits.Count) 'Treat the report as sensitive; the first masking pass missed these shapes.'
+} else {
+    Add-Check 'credentials' 'ok' 'post-write sweep found no credential-like strings in the packaged text files' ''
+}
+
+# 1. the basics
+if ($dshProc.Count -gt 0) {
+    Add-Check 'agent' 'ok' ('running (' + $dshProc.Count + ' process(es))') ''
+} else {
+    Add-Check 'agent' 'warn' 'not running at capture - no live evidence in this kit' 'Start DSH, reproduce the problem, and capture again while it is running.'
+}
+if ($hostVer -and $hostVer -notmatch '^unknown') {
+    $verDetail = $hostVer
+    if ($cliVer) { $verDetail += '; cli=' + $cliVer } else { $verDetail += '; cli not detected' }
+    $desktopBase = if ($hostVer -match 'desktop=([0-9]+\.[0-9]+\.[0-9]+)') { $Matches[1] } else { '' }
+    $cliBase = if ($cliVer -match '([0-9]+\.[0-9]+\.[0-9]+)') { $Matches[1] } else { '' }
+    if ($desktopBase -and $cliBase -and $desktopBase -ne $cliBase) {
+        Add-Check 'version' 'warn' $verDetail 'Desktop app and CLI are different builds; reproduce the problem in both before trusting a build-specific conclusion.'
+    } elseif (-not $cliVer) {
+        Add-Check 'version' 'warn' $verDetail 'The CLI version could not be read (dsh.ps1/dsh.cmd not on PATH or printed nothing); run `dsh --version` in PowerShell and compare it with the desktop build by hand.'
+    } else {
+        Add-Check 'version' 'ok' $verDetail ''
+    }
+} else {
+    $cliNote = if ($cliVer) { '; cli=' + $cliVer } else { '; cli not detected' }
+    Add-Check 'version' 'warn' ('agent version not detected' + $cliNote) 'The runtime manifest was not found next to the app; the version in system.txt is blank.'
+}
+if ($dshHomeMissing) {
+    Add-Check 'dsh home' 'fail' 'DSH_HOME and USERPROFILE are both empty' 'Set DSH_HOME to the real home, or start DSH once from a normal user session.'
+} elseif (Test-Path $Dsh) {
+    Add-Check 'dsh home' 'ok' (Mask-Secrets $Dsh) ''
+} else {
+    Add-Check 'dsh home' 'fail' ('missing: ' + (Mask-Secrets $Dsh)) 'Set DSH_HOME to the real home, or start DSH once.'
+}
+if ($profileDirs.Count -eq 0) {
+    Add-Check 'profiles' 'fail' 'no profiles found under DSH_HOME' 'Start DSH once so it creates its profile.'
+} else {
+    Add-Check 'profiles' 'ok' ((@($profileDirs | ForEach-Object { $_.Name })) -join ', ') ''
+}
+
+# 2. per-profile integrity
+foreach ($pd in $profileDirs) {
+    $pname = $pd.Name
+    $pkgPath = Join-Path $pd.FullName 'package.json'
+
+    $missing = @()
+    foreach ($req in @('package.json', 'cordis.patch.yml')) {
+        if (-not (Test-Path (Join-Path $pd.FullName $req))) { $missing += $req }
+    }
+    if ($missing.Count -gt 0) {
+        Add-Check ('profile ' + $pname + ' · files') 'fail' ('missing ' + ($missing -join ', ')) 'A bootable profile always has package.json and cordis.patch.yml; restore them from a backup or a fresh profile template.'
+    } else {
+        Add-Check ('profile ' + $pname + ' · files') 'ok' 'package.json + cordis.patch.yml present' ''
+    }
+
+    $pkg = $null
+    if (Test-Path $pkgPath) {
+        try {
+            $pkg = ConvertFrom-Json ([System.IO.File]::ReadAllText($pkgPath))
+            Add-Check ('profile ' + $pname + ' · package.json') 'ok' 'valid JSON' ''
+        } catch {
+            Add-Check ('profile ' + $pname + ' · package.json') 'fail' ('not valid JSON: ' + (Short $_.Exception.Message 160)) 'Fix the JSON syntax first; every later check in this profile depends on it.'
+            continue
+        }
+    }
+
+    if ($pkg) {
+        # Bundles are resolved by the DSH installation as well as by profile
+        # node_modules, so looking only under profiles/<name>/node_modules
+        # produced false FAILs on every shipped profile. The authoritative
+        # answer is the compose check above: if `--dump-config` succeeds, the
+        # resolver found them. Here we only report what the profile declares.
+        $declared = 0
+        try { if ($pkg.dsh -and $pkg.dsh.profile -and $pkg.dsh.profile.bundles) { $declared = @($pkg.dsh.profile.bundles).Count } } catch { }
+        if ($declared -gt 0) {
+            Add-Check ('profile ' + $pname + ' · bundles') 'ok' ($declared.ToString() + ' bundle(s) declared; resolution covered by the compose check') ''
+        } else {
+            Add-Check ('profile ' + $pname + ' · bundles') 'warn' 'no dsh.profile.bundles declared' 'A profile without bundles boots only the core; if that is not intentional, restore the bundles list.'
+        }
+
+        $linkDeps = @()
+        try {
+            if ($pkg.dependencies) {
+                foreach ($dep in @($pkg.dependencies.PSObject.Properties)) {
+                    if (([string]$dep.Value) -like 'link:*') { $linkDeps += $dep.Name }
+                }
+            }
+        } catch { }
+        $badLinks = @()
+        foreach ($ln in $linkDeps) {
+            $target = ([string]$pkg.dependencies.$ln).Substring(5)
+            if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $pd.FullName $target }
+            if (-not (Test-Path $target)) { $badLinks += ($ln + ' -> ' + $target) }
+        }
+        if ($badLinks.Count -gt 0) {
+            Add-Check ('profile ' + $pname + ' · link deps') 'fail' (Short ($badLinks -join '; ') 220) 'The plugin was moved or deleted; point the link: path at its new home, or reinstall that plugin.'
+        } elseif ($linkDeps.Count -gt 0) {
+            Add-Check ('profile ' + $pname + ' · link deps') 'ok' ($linkDeps.Count.ToString() + ' link: dependency target(s) exist') ''
+        }
+    }
+}
+
+# 3. the environment around it
+# A rescue report that only looks at the drive it is written to misses the
+# two that actually matter: the system drive (profiles, temp, update cache)
+# and the drive holding DSH_HOME. Check all three, with a stable label.
+$diskDrives = @()
+$seenDisk = @{}
+foreach ($dd in @(
+        @{ root = $env:SystemDrive;                role = 'system' },
+        @{ root = (Split-Path -Qualifier $Dsh);    role = 'DSH home' },
+        @{ root = $OutDrive;                      role = 'report' })) {
+    $root = [string]$dd.root
+    if ([string]::IsNullOrWhiteSpace($root)) { continue }
+    $root = $root.TrimEnd('\')
+    if ($seenDisk.ContainsKey($root.ToLowerInvariant())) { continue }
+    $seenDisk[$root.ToLowerInvariant()] = $true
+    $letter = $root.Substring(0, 1)
+    $freeMB = $null
+    try {
+        $pd2 = Get-PSDrive -Name $letter -ErrorAction Stop
+        if ($null -ne $pd2.Free) { $freeMB = [int][math]::Round($pd2.Free / 1MB) }
+    } catch { }
+    if ($null -ne $freeMB) { $diskDrives += [pscustomobject]@{ Root = ($letter + ':'); Role = $dd.role; FreeMB = $freeMB } }
+}
+if ($diskDrives.Count -gt 0) {
+    $low   = @($diskDrives | Where-Object { $_.FreeMB -lt 200 })
+    $tight = @($diskDrives | Where-Object { $_.FreeMB -ge 200 -and $_.FreeMB -lt 10240 })
+    $diskDetail = (($diskDrives | ForEach-Object { '{0} ({1}) {2} MB free' -f $_.Root, $_.Role, $_.FreeMB }) -join ', ')
+    if ($low.Count -gt 0) {
+        Add-Check 'disk' 'fail' $diskDetail 'Free space or move the kit folder; the collection may finish but the zip will not fit.'
+    } elseif ($tight.Count -gt 0) {
+        Add-Check 'disk' 'warn' $diskDetail 'Not urgent; a full drive also breaks DSH itself, so keep an eye on it.'
+    } else {
+        Add-Check 'disk' 'ok' $diskDetail ''
+    }
+}
+if ($found -eq 0) {
+    Add-Check 'logs' 'warn' 'no log files found' 'Expected on a fresh install; desktop builds from 0.2.1-rc.3 write crash logs under %APPDATA%\@deepseek-ai\dsh-desktop\logs instead.'
+} else {
+    Add-Check 'logs' 'ok' ($found.ToString() + ' file(s), newest ' + $logFresh) ''
+}
+$recentDshDumps = @($dshRelatedDumps | Where-Object { $_.Time -gt (Get-Date).AddHours(-48) })
+$recentOtherDumps = @($otherDumps | Where-Object { $_.Time -gt (Get-Date).AddHours(-48) })
+if ($recentDshDumps.Count -gt 0) {
+    Add-Check 'crash dumps' 'warn' ($recentDshDumps.Count.ToString() + ' DSH-related dump(s) in the last 48h') 'A dump means a native crash is on disk; open crash-dumps.txt for paths.'
+} elseif ($recentOtherDumps.Count -gt 0) {
+    $otherNames = @($recentOtherDumps | Group-Object Process | ForEach-Object { '{0} x{1}' -f $_.Name, $_.Count })
+    $otherTotal = $otherDumps.Count
+    $otherOutside = $otherTotal - $recentOtherDumps.Count
+    $otherNote = 'no DSH-named dump in the last 48h; ' + $recentOtherDumps.Count + ' unrelated in the same window (' + ($otherNames -join ', ') + '); ' + $otherTotal + ' unrelated dump(s) on disk in total'
+    if ($otherOutside -gt 0) { $otherNote += ' (' + $otherOutside + ' outside the 48h window or unnamed)' }
+    Add-Check 'crash dumps' 'ok' $otherNote 'crash-dumps.txt lists every dump, including ones with no process name; crash logs are separate files.'
+} else {
+    Add-Check 'crash dumps' 'ok' 'none in the last 48h' ''
+}
+
+# The symptom is asked in PowerShell (Read-Host) now, but a pipe or a caller can
+# still hand us undecodable bytes, and an unattended run can hand us nothing at
+# all. Both deserve a line in checks: a missing or mojibake symptom is worse
+# than none, because the next reader cannot tell it apart from "no problem".
+if ($Symptom -match [string][char]0xFFFD) {
+    Add-Check 'symptom' 'warn' 'the captured symptom contains undecodable characters (U+FFFD)' 'Re-run with -Symptom "..." from PowerShell, or use the .bat, whose prompt runs in PowerShell and is Unicode-safe.'
+} elseif ([string]::IsNullOrWhiteSpace($Symptom)) {
+    # A user pressing Enter at the prompt and an unattended run must look the same
+    # to whoever reads checks.json later, so both get a warn; only the reason differs.
+    $noSymptomWhy = if ([Console]::IsInputRedirected) { 'non-interactive run' } else { 'skipped at the prompt' }
+    Add-Check 'symptom' 'warn' ('no symptom was provided (' + $noSymptomWhy + ')') 'Pass -Symptom "what you saw on screen" to give the next reader the one clue that matters.'
+}
+
+# 4. machine-readable copy + counts for index.md
+$checkCounts = [ordered]@{ ok = 0; warn = 0; fail = 0 }
+foreach ($c in $script:Checks) {
+    if ($checkCounts.Contains($c.status)) { $checkCounts[$c.status] = $checkCounts[$c.status] + 1 }
+}
+# Sort for the reader: failures first, then warnings, then passes. Within a
+# status, group by check family (agent, version, home, profiles, compose, disk,
+# logs) and keep the original order inside a family. A plain status-only sort
+# used to interleave headless/desktop/web and made the PASS block look random.
+$checkStatusRank = @{ fail = 0; warn = 1; ok = 2 }
+$checkKindRank = @{
+    'agent' = 0; 'version' = 1; 'dsh home' = 2; 'profiles' = 3
+    'disk' = 8; 'logs' = 9; 'crash dumps' = 10
+}
+$sortedChecks = @($script:Checks | ForEach-Object -Begin { $checkIndex = 0 } -Process {
+    $k = [string]$_.kind
+    $kr = if ($checkKindRank.ContainsKey($k)) { $checkKindRank[$k] }
+          elseif ($k -like 'profile *') { 4 }
+          elseif ($k -eq 'config compose') { 5 }
+          else { 7 }
+    $i = $checkIndex
+    $checkIndex++
+    [pscustomobject]@{ Check = $_; StatusRank = $checkStatusRank[$_.status]; KindRank = $kr; Index = $i }
+} | Sort-Object StatusRank, KindRank, Index | ForEach-Object { $_.Check })
+$checksDoc = [ordered]@{
+    kit_version = $KitVersion
+    captured_at = $CapturedAt
+    counts      = $checkCounts
+    checks      = $sortedChecks
+}
+Add-Text 'checks.json' (ConvertTo-Json -InputObject $checksDoc -Depth 6)
+
 Step 'writing index.md'
 
 # --- 9. index: the page a reader should open first ---------------------------
@@ -1461,7 +2016,7 @@ $status = @()
 $running = if ($dshProc.Count -gt 0) { 'yes' } else { 'no' }
 $status += "kit_version            = $KitVersion"
 $status += "captured_at            = $CapturedAt"
-$status += "packaged_at            = $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+$status += "packaged_at            = $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))"
 $status += "dsh_running_at_capture = $running"
 $status += "dsh_process_count      = $($dshProc.Count)"
 $status += "agent_version          = $hostVer"
@@ -1497,16 +2052,21 @@ $patterns = [ordered]@{
     'context window' = '(?i)context.{0,12}(length|window|exceed)|CONTEXT_WINDOW_EXCEEDED|too many tokens|上下文.{0,8}(超|过长|上限|溢出)'
     'timeout'        = '(?i)timeout|timed out|deadline exceeded|超时|未响应|没有响应'
     'module missing' = '(?i)cannot find module|MODULE_NOT_FOUND|no loader entry matched|找不到模块|模块(不存在|缺失)'
+    'cors'           = '(?i)blocked by cors|access-control-allow-origin|cors (policy|error|preflight)'
+    'renderer'       = '(?i)renderer (process|crash)|gpu process.{0,24}(crash|gone)|webcontents.{0,24}(crash|failed)|ERR_FAILED|Aw, Snap'
+    'websocket'      = '(?i)websocket.{0,24}(error|fail|closed|disconnect)|ws[s]?://.{0,80}(ECONNREFUSED|ECONNRESET|closed)'
 }
 # session-tail.txt is excluded as well: it is a transcript, so it contains every
 # word the user and the agent said. Scanning it turns the agent's own sentences
 # ("the timeout was caused by...") into hits.
 $triageSkip = @('sessions.txt', 'tree-dsh.txt', 'processes.tsv', 'network.txt', 'timeline.txt', 'system.txt', 'session-tail.txt', 'environment.txt')
+$scannedFiles = 0
 Get-ChildItem $Tmp -Recurse -File -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -in @('.txt', '.log', '.jsonl', '.ndjson') -and $_.Length -lt 8MB -and $triageSkip -notcontains $_.Name } |
+    Where-Object { $_.Extension -in @('.txt', '.log', '.jsonl', '.ndjson') -and $_.Length -lt 8MB -and $triageSkip -notcontains $_.Name -and $_.Name -notlike 'dump-config-*' } |
     ForEach-Object {
         $body = Read-TextAuto $_.FullName 0
         if (-not $body) { return }
+        $scannedFiles++
         foreach ($k in $patterns.Keys) {
             $ms = [regex]::Matches($body, $patterns[$k])
             if ($k -eq 'module missing' -and $ms.Count -gt 0) {
@@ -1538,8 +2098,8 @@ Get-ChildItem $Tmp -Recurse -File -Force -ErrorAction SilentlyContinue |
 
 # Threshold warnings: the boring failures that look like agent bugs.
 $warn = @()
-if ($outFreeMB -ne $null -and $outFreeMB -lt 200) {
-    $warn += ("only {0} MB free on the drive that holds the report - the zip may not fit" -f $outFreeMB)
+if ($null -ne $outFreeMB -and $outFreeMB -lt 200) {
+    $warn += ("only {0} MB free on {1} (the drive that holds the report) - the zip may not fit" -f $outFreeMB, $OutDrive)
 }
 if (-not $os -or -not $cs) {
     # Inside a restricted sandbox every CIM call comes back empty. Saying so is
@@ -1567,18 +2127,23 @@ $notResp = @($procs | Where-Object {
     $lv -and $lv.Responding -eq $false
 })
 foreach ($nr in $notResp) { $warn += ("process not responding: {0} (pid {1}, {2} MB)" -f $nr.Name, $nr.ProcessId, $liveMap[[int]$nr.ProcessId].WsMB) }
-$dumps = @()
-if ($localAppDir) {
-    $dumps = @(Get-ChildItem (Join-Path $localAppDir 'CrashDumps') -File -ErrorAction SilentlyContinue |
-               Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-48) })
+if ($recentDshDumps.Count -gt 0) { $warn += ("{0} DSH-related crash dump(s) in the last 48h (%LOCALAPPDATA%\CrashDumps)" -f $recentDshDumps.Count) }
+
+# Final guard: raw dsh stdout/stderr are unmasked and must never enter the zip.
+# The scratch folder is outside $Tmp, but a failed cleanup or a future refactor
+# must not be able to leak them silently.
+$rawDump = @(Get-ChildItem $Tmp -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'dump-config-*' -and $_.Extension -in @('.out', '.err') })
+if ($rawDump.Count -gt 0) {
+    foreach ($rf in $rawDump) { Remove-Item -LiteralPath $rf.FullName -Force -ErrorAction SilentlyContinue }
+    $warn += ('removed ' + $rawDump.Count + ' unmasked dump file(s) from the report folder before zipping')
 }
-if ($dumps.Count -gt 0) { $warn += ("{0} crash dump(s) in the last 48h (%LOCALAPPDATA%\CrashDumps)" -f $dumps.Count) }
 
 $idx = @()
 $idx += '# DSH rescue report'
 $idx += ''
 $idx += "**Captured:** $CapturedAt  "
-$idx += "**Packaged:** $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  "
+$idx += "**Packaged:** $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))  "
 $idx += "**Kit version:** $KitVersion  "
 $idx += "**Agent:** $hostVer  "
 $idx += "**Running at capture:** $running"
@@ -1587,6 +2152,10 @@ if ($Symptom) {
     $idx += '## What the user saw'
     $idx += ''
     $idx += '> ' + ($Symptom -replace "`r?`n", ' ')
+    if ($Symptom -match [string][char]0xFFFD) {
+        $idx += ''
+        $idx += '_Some characters could not be decoded (U+FFFD). Re-run from PowerShell with `-Symptom "..."`, or use the .bat which switches the console to UTF-8._'
+    }
     $idx += ''
 } else {
     # Say so explicitly. A missing section reads as "the kit forgot", an empty
@@ -1602,6 +2171,8 @@ $idx += ''
 $idx += '| file | what it answers |'
 $idx += '|---|---|'
 $idx += '| `dsh-status.txt` | was the agent running, which build, how many logs |'
+$idx += '| `checks.json` | machine-readable PASS/WARN/FAIL checks, counts and fix hints |'
+$idx += '| `dump-config-*.txt` | real composer output per profile; first error line at the top |'
 $idx += '| `session-tail.txt` | what the agent was doing: last 25 events of the newest sessions |'
 $idx += '| `timeline.txt` | fresh install or long history; what changed in the last 48h |'
 $idx += '| `environment.txt` | PATH, proxy and TEMP as the agent actually sees them |'
@@ -1613,6 +2184,33 @@ $idx += '| `dsh-process-tree.txt` | which plugins actually spawned helpers |'
 $idx += '| `credentials-meta.txt` | whether a key is configured (a count only - no names, no values) |'
 $idx += '| `logs/` | log tails, crash logs first |'
 $idx += '| `sessions.txt` | every session folder, size and mtime |'
+$idx += ''
+$idx += '## Checks'
+$idx += ''
+$idx += 'Static checks run before packaging. PASS means nothing to do; WARN means'
+$idx += 'the report is thinner than it could be; FAIL means the installation is'
+$idx += 'internally inconsistent right now and the rest of the report explains it.'
+$idx += ''
+$idx += '| status | check | detail | fix |'
+$idx += '|---|---|---|---|'
+foreach ($c in $sortedChecks) {
+    $label = switch ($c.status) { 'ok' { 'PASS' } 'warn' { 'WARN' } 'fail' { 'FAIL' } default { $c.status } }
+    $kind = ([string]$c.kind) -replace '\|', '\|'
+    $det  = ([string]$c.detail) -replace '\|', '\|'
+    $fix  = if ($c.status -eq 'ok') { '' } else { ([string]$c.fixHint) -replace '\|', '\|' }
+    $idx += ('| {0} | {1} | {2} | {3} |' -f $label, $kind, $det, $fix)
+}
+$idx += ''
+$idx += ('**{0} passed, {1} warnings, {2} failures.**' -f $checkCounts.ok, $checkCounts.warn, $checkCounts.fail)
+if ($checkCounts.fail -gt 0) {
+    $idx += 'A FAIL row is the first thing to fix; the evidence files below explain it.'
+} elseif ($checkCounts.warn -gt 0) {
+    $idx += 'Warnings do not prove a bug, but part of the picture is missing.'
+} else {
+    $idx += 'All checks passed. If DSH still misbehaves, the cause is runtime, not installation: compare the log tails and session-tail.txt.'
+}
+$idx += ''
+$idx += 'Machine-readable copy with the same rows: `checks.json`.'
 $idx += ''
 $idx += '## Automatic triage'
 $idx += ''
@@ -1635,6 +2233,26 @@ $idx += 'The Windows event log is not part of this scan - see recent-errors.txt.
     }
 }
 $idx += ''
+$idx += ('Scanned {0} text file(s) under the report folder. Transcripts and inventories are excluded, and `dump-config-*` is reported below instead of being pattern-scanned.' -f $scannedFiles)
+$idx += ''
+if ($dumpResults.Count -gt 0) {
+    $idx += '### Config compose (dump-config)'
+    $idx += ''
+    $dumpBad = @($dumpResults | Where-Object { $_.status -ne 'ok' })
+    if ($dumpBad.Count -eq 0) {
+        $idx += 'Every non-desktop profile composed cleanly; the patch files parse.'
+    } else {
+        foreach ($r in $dumpBad) {
+            $lbl = if ($r.status -eq 'fail') { 'FAIL' } else { 'WARN' }
+            $firstLine = if ($r.first) { Short $r.first 200 } else { '(no stderr)' }
+            $idx += ('- **' + $lbl + ' ' + $r.profile + '** (' + $r.seconds + 's): ' + $firstLine)
+        }
+    }
+    $idx += ''
+    $idx += '`desktop` is skipped: the CLI refuses it ("managed exclusively by the Electron app").'
+    $idx += 'Full composer output per profile: `dump-config-<profile>.txt`; the first error line is at the top.'
+    $idx += ''
+}
 $idx += '## Warnings'
 $idx += ''
 if ($warn.Count -eq 0) {
@@ -1660,8 +2278,13 @@ $idx += '## Privacy'
 $idx += ''
 $idx += '`credentials.yaml` is never copied. Not even its key names are printed:'
 $idx += 'credentials-meta.txt reports how many are configured, nothing else.'
-$idx += 'Command lines, log lines, config files, file paths and the user name are'
-$idx += 'masked before they are written.'
+$idx += 'Command lines, log lines, config values and the user name are masked'
+$idx += 'before they are written. The install path (the DSH_HOME prefix) is NOT'
+$idx += 'masked: absolute local paths are part of the evidence and appear in the files.'
+if ($credSweepHits.Count -gt 0) {
+    $idx += ''
+    $idx += ('**Privacy sweep:** {0} credential-like string(s) in {1} file(s) survived the first masking pass and were masked again before packaging. Still read the dumps yourself before sharing.' -f $credSweepTotal, $credSweepHits.Count)
+}
 $idx += ''
 $idx += '**Read `session-tail.txt` yourself before handing this folder to anyone.**'
 $idx += 'It answers "what was the agent doing when it hung", which means it contains'
@@ -1674,9 +2297,9 @@ Add-Text 'index.md' (Mask-Secrets ($idx -join "`r`n"))
 $readme = @(
     'DSH rescue kit  v' + $KitVersion
     '========================='
-    "generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    "generated: $((Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz'))"
     ''
-    'OPEN index.md FIRST. It has the triage, the timeline and the file map.'
+    'OPEN index.md FIRST. It has the symptom, the PASS/WARN/FAIL checks, the triage'
     ''
     'What is inside:'
     '  index.md                start here: symptom, triage, warnings, file map'
@@ -1692,6 +2315,8 @@ $readme = @(
     '  tree-extra-*.txt        extra directories, if any were requested'
     '  sessions.txt            every workspace, every session folder + size'
     '  credentials-meta.txt    whether a key exists (count only, no names, no values)'
+    '  checks.json             PASS/WARN/FAIL checks: profiles, link deps, composer, disk'
+    '  dump-config-*.txt       real `dsh --dump-config` output per profile; first error on top'
     '  crash-dumps.txt         dump files, if any were written'
     '  logs/                   crash logs and log tails (flattened names)'
     '  recent-errors.txt       Windows Application + System errors, last 24h'
@@ -1717,6 +2342,8 @@ $readme = @(
     'strings in command lines and logs are replaced with ***. The user name and'
     'profile path are replaced by %USERNAME% / %USERPROFILE%. The key list is not'
     'reproduced either: credentials-meta.txt only says how many are configured.'
+    'The install path (the DSH_HOME prefix) is not masked: absolute local paths'
+    'are evidence, not a leak.'
 )
 Add-Text 'README.txt' ($readme -join "`r`n")
 
@@ -1798,6 +2425,10 @@ finally {
             foreach ($d in [System.IO.Directory]::GetDirectories($rootL, 'work-*')) {
                 try { [System.IO.Directory]::Delete($d, $true) } catch { }
             }
+            # Raw dump-config stdout/stderr (unmasked) is scratch, never evidence.
+            foreach ($d in [System.IO.Directory]::GetDirectories($rootL, 'dump-*')) {
+                try { [System.IO.Directory]::Delete($d, $true) } catch { }
+            }
         }
     } catch { }
     if (-not $script:KeepTmp) {
@@ -1821,4 +2452,6 @@ if (-not $ok) { exit 1 }
 
 $sizeKB = [math]::Round((Get-Item $zip).Length / 1KB, 1)
 Write-Output "OK $zip ($sizeKB KB)"
+Write-Output ('checks: {0} ok / {1} warn / {2} fail' -f $checkCounts.ok, $checkCounts.warn, $checkCounts.fail)
+if ($checkCounts.fail -gt 0) { Write-Output 'Open index.md in the report: FAIL rows come first.' }
 exit 0

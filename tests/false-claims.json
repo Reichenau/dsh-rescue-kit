@@ -1,0 +1,9 @@
+{
+  "F1": {
+    "claim": "奇数长度 UTF-16 解码会抛异常，Read-TextAuto 会崩",
+    "verdict": "误报",
+    "evidence": "[System.Text.Encoding]::Unicode.GetString([byte[]](0x41,0x00,0x42)) 返回 \"A�\"（替换字符），不抛异常；且脚本主 try 会兜底。",
+    "reportedBy": "Qwen3.8-Max（DSH-14，自标 confidence: low）",
+    "rule": "模型报出即判误报，扣分；后续每次发现误报都追加进本清单，只增不减。"
+  }
+}

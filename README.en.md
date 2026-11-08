@@ -52,13 +52,13 @@ groups, forums or issue trackers.**
 1. Put these files in any empty folder (anywhere works; the script locates itself).
 2. Double-click `rescue-kit.bat`. It first asks: **what do you see on screen?** (one line; press
    Enter to skip).
-3. Wait twenty to thirty seconds; the window prints one line per step and ends with:
+3. Wait thirty to sixty seconds (about 36–52s on our test machines); the window prints one line per step and ends with:
 
    ```
    OK C:\...\reports\11-04 20点18分 2026.zip (79.6 KB)
    ```
 
-4. Open `reports\`, **read `index.md` yourself first**, then drag the whole zip to another AI.
+4. Open `reports\`, **read `index.md` yourself first**, then drag the whole zip to another AI. Old zips can be deleted; keep the newest one.
 
 The zip is named after the moment it was made: **date, hour and minute, year**. Running twice in the
 same minute does not overwrite: the second becomes `... (2).zip` — people double-click when things go
@@ -79,14 +79,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Symptom
 
 That sentence goes into the top of `index.md`. Whoever reads it knows where to look instead of guessing.
 
-The double-click prompt does the same thing: it puts your sentence into the `DSH_RESCUE_SYMPTOM`
-environment variable rather than `echo %SYMPTOM% > file` — a single `&` `|` `<` `>` `%` in that
-sentence would be truncated or treated as syntax by cmd. The script then sniffs the encoding when it
-reads the value (Chinese consoles are GBK, UTF-8 terminals are UTF-8; neither becomes mojibake). On the
+The double-click prompt does the same thing: the PowerShell side asks with `Read-Host`, which is
+Unicode-native, instead of cmd's `set /p` plus `chcp` — so a GBK console cannot mangle the text. On the
 command line, `-SymptomFile <path>` takes the same route.
 
 Before starting, the script also checks free space on the drive holding `reports\`: under 200 MB it
-warns immediately. Spending 30 seconds collecting and then failing to package because the disk is full
+warns immediately. Spending 30–60 seconds collecting and then failing to package because the disk is full
 is the most pointless way to waste a run.
 
 ---
@@ -94,6 +92,72 @@ is the most pointless way to waste a run.
 ---
 
 ## Versions
+
+**v5.2** · 2026-11-08 (first stable release)
+
+Compared with the last published release (v5.0.3), this version moves from "collects evidence" to "tells you what it means, and reproduces config errors itself":
+
+- **A health-check verdict**: the zip now carries `checks.json`, and `index.md` opens with a PASS / WARN / FAIL table — read a few lines instead of digging through dozens of files.
+- **It re-runs your configuration**: for every profile that works from the CLI it runs `dsh --profile <name> --dump-config` and surfaces YAML errors and missing patch entries (e.g. `patch: entry "tool-ralph" not found`). This is the biggest upgrade in this release.
+- **Better secret detection**: alongside `sk-` and `AKIA`, it now masks `ak-`, `org-`, `lin_api_`, `xai-` and friends, then re-scans the whole package before zipping so an API key cannot ride along.
+- **Automatic channel fallback**: when cmd returns nothing, the kit retries through PowerShell; a 30-second hang is killed instead of stalling the whole run. Dump headers record the channel, whether a retry happened, and the exit code.
+- **The Chinese prompt no longer breaks**: the question moved into PowerShell (English + Chinese), so cmd's `set /p` and `chcp` can't mangle it; genuine mojibake still raises a warning.
+- **It announces the result**: the console always ends with `checks: X ok / Y warn / Z fail`; if the window is force-closed and only `_tmp` remains, the bat tells you how to pack it manually.
+- **More detail where it matters**: free space on the system / DSH / report drives, crash-dump counts inside and outside the 48-hour window, and a warning when the desktop and CLI versions disagree.
+- **23 regression probes ship with the repo** (`tests/`), so fixing one thing cannot silently break another (23 checks / 0 mismatch this round).
+
+**v5.1.5** · 2026-11-08
+
+Marvis reviewed v5.1.4 as **ship (0 P0 / 0 P1)**; two small P2 cleanups followed:
+
+- **Symptom warning parity**: pressing Enter at the prompt now also records a `symptom` WARN (detail says `skipped at the prompt` vs `non-interactive run`), so downstream readers can tell "user skipped" from "tool never asked".
+- **`_tmp` salvage hint**: the bat now says up front that a mid-run close may leave a `_tmp` folder worth zipping by hand, and the success path re-checks for it.
+- **Docs wording**: the bat opens the `reports` folder, not a specific report file.
+
+**v5.1.4** · 2026-11-08
+
+Another round from Marvis's black-box review of v5.1.3 (0 P0 / 2 P1 / 7 P2):
+
+- **`exit_note` only when stdout is actually empty**: the old condition fired for any non-ok status with exit 0, so a profile with 417 lines of stdout and a stderr warning was labelled "stdout was empty". The note now keys off empty output and carries the real exit code.
+- **`retry` field in the dump header**: `0`, or `1 (powershell empty -> cmd)`.
+- **Bilingual prompt**: the `Read-Host` question now prints English and Chinese.
+- **Non-interactive runs get a `symptom` WARN**: no `-Symptom` plus redirected stdin no longer disappears silently.
+- **Truncation noted**: the stdout separator reads `first 250 of N lines`.
+- **README cleanup**: removed the obsolete `chcp 65001` / `set /p` / `DSH_RESCUE_SYMPTOM` wording; noted that old report zips can be deleted.
+
+**v5.1.3** · 2026-11-08
+
+A round driven by Marvis's black-box review of v5.1.2. The point is the CLI evidence path:
+
+- **dump-config now runs through PowerShell first (`dsh.ps1`)**: on Marvis's machine every `cmd.exe` / `dsh.cmd` call returned 0 bytes while `dsh --profile <p> --dump-config` through PowerShell printed a stable 407-line tree. PowerShell is tried first; cmd is retried once only when the PowerShell capture is empty. FAIL is reported only after both channels come back empty, and the wording now says it is a kit capture failure, not proof that the install is broken.
+- **Real timeout and real cleanup**: both channels get a hard 30s timeout and a process-tree kill (the old code killed only `cmd.exe`, so the node child could survive).
+- **Channel fields in the dump file**: `cli_exe`, `channel` (with retry flag) and `exit_note`, so nobody has to guess from `exit_code=0`.
+- **CLI version from the same source**: version detection prefers `dsh.ps1`; when it cannot be read, `system.txt` says `dsh_cli = (not detected)` and the version check reports WARN instead of a false PASS.
+- **Credential sweep is always visible**: the `credentials` check now appears on every run (WARN on hits, PASS otherwise) instead of only existing when something was found.
+- **Crash-dump summary accounts for every file**: the check reports both the unrelated dumps in the 48h window and the total on disk (including unnamed dumps outside the window).
+- **Chinese symptoms no longer turn into mojibake**: the prompt moved to PowerShell's `Read-Host` (Unicode-native) and the bat stays ASCII; a U+FFFD symptom still raises a `symptom` WARN and suggests `-Symptom`.
+- **Console summary**: after packaging the kit prints `checks: X ok / Y warn / Z fail` and points at `index.md` when there are failures.
+
+**v5.1.2** · 2026-11-08
+
+Two ideas borrowed from the community's `dsh-doctor` — not its auto-repair. This kit stays read-only
+forensics; what got harder is the judgement:
+
+- **Structured checks**: each check carries `kind / status / detail / fix_hint` and lands in
+  `checks.json`; `index.md` opens with a PASS / WARN / FAIL table and a summary line such as
+  `N passed, N warnings, N failures`.
+- **Reproduce config errors up front**: for every profile the CLI can reproduce, run
+  `dsh --profile <p> --dump-config` and surface the first `Error:` / `YAMLException:` line in triage.
+  `desktop` is owned by Electron; it is skipped and recorded as a warning.
+- **When the exit code lies, stderr wins**: `dsh.cmd` does not propagate node's exit code (a broken
+  YAML still reports 0), so FAIL / WARN is decided from stderr; `dump-config-*.txt` records an
+  `exit_note`.
+- **Raw output no longer ships**: the dump `.out/.err` go to a temp directory, are masked into the
+  report and deleted; the zip only carries the masked `dump-config-*.txt`.
+- **False FAILs removed**: bundle resolution is left to the compose result instead of guessing from
+  `profiles\<name>\node_modules`; triage no longer mistakes `timeoutMs` inside dump files for a timeout.
+- More environment checks: parseable `package.json`, `link:` dependencies that actually exist, compose
+  results, free disk space, crash dumps.
 
 **v5.0.3** · 2026-11-05
 
@@ -293,7 +357,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Minimal
 
 `-Minimal` keeps only processes whose **command line** contains `dsh` / `deepseek` / `electron` /
 `cordis` (matched by command line, not by process name); `processes.tsv` shrinks from a couple hundred
-rows to a few dozen — what other software is doing is irrelevant to this failure.
+rows to a few dozen — what other software is doing is irrelevant to this failure. (-Minimal only trims the process table; network, timeline and environment are still collected.)
 
 ---
 
