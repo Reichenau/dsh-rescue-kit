@@ -89,6 +89,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File make-rescue-kit.ps1 -Symptom
 
 ## 版本
 
+**v5.2.1** · 2026-11-16（兼容性复检）
+
+- **在 DSH 0.2.2-rc.3 上复跑**：desktop 与 CLI 均为 `0.2.2-rc.3`，采集和打包正常，`checks: 23 ok / 2 warn / 0 fail`；桌面端与 CLI 版本不一致那条 WARN 已消失。
+- **脚本头版本对齐**：头部注释从 `v5.1.1` 改为 `v5.2.1`，与 `$KitVersion` 一致；无行为变更。
+- 剩余 2 条 WARN 仍属预期：`bili-duty` 的 `tool-ralph` 旧 patch；desktop profile 不可从 CLI 复现（Electron 管理）。
+
 **v5.2** · 2026-11-08（首个正式版）
 
 对比上一次发布的 v5.0.3，这一版把「能取证」升级成了「能看懂、能自己复现」：

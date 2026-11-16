@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 <#
-  DSH Rescue Kit  v5.1.1
+  DSH Rescue Kit  v5.2.1
   =======================
   Snapshot whatever your AI agent workspace looked like when it broke, into one
   zip. Hand the zip to another AI (or a human) and it can read the evidence
@@ -21,7 +21,7 @@
   scripts in the ANSI codepage by default and would garble every Chinese string
   in here.
 
-  Where the evidence actually lives (0.2.1-rc.3 and later):
+  Where the evidence actually lives (0.2.1-rc.3 and later; verified on 0.2.2-rc.3):
       <dsh>\logs\desktop-next.log      STOPPED being written around rc.3. If it
                                        exists it is a leftover from an older
                                        build, and its last line is the best clue
@@ -60,7 +60,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$KitVersion = '5.2'
+$KitVersion = '5.2.1'
 # One clock for the whole kit. "captured" must mean "when the evidence was
 # gathered", not "when the zip was written two minutes later". ISO 8601 keeps
 # timezone offset, so two captures from different zones stay comparable.

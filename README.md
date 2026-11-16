@@ -80,6 +80,6 @@ layer, delete `network.txt`, `sessions.txt` and `logs/` first — at the cost of
 - 中文 → **[README.zh-CN.md](README.zh-CN.md)**（版本记录、收集清单、不会收集什么、踩过的坑）
 - English → **[README.en.md](README.en.md)** (versions, what it collects, what it never collects, pitfalls)
 
-当前版本 / Current: **v5.2**（2026-11-08）
+当前版本 / Current: **v5.2.1**（2026-11-16）
 
 Requires / 依赖：Windows 10 / 11 + PowerShell 5.1（系统自带 / built in）。License: MIT

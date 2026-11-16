@@ -93,6 +93,12 @@ is the most pointless way to waste a run.
 
 ## Versions
 
+**v5.2.1** · 2026-11-16 (compatibility re-check)
+
+- **Re-ran on DSH 0.2.2-rc.3**: desktop and CLI both report `0.2.2-rc.3`; capture and packaging work; `checks: 23 ok / 2 warn / 0 fail`; the desktop/CLI version-mismatch warning is gone.
+- **Script header aligned**: the header comment changed from `v5.1.1` to `v5.2.1`, matching `$KitVersion`; no behavior change.
+- The remaining 2 warnings are expected: the `bili-duty` `tool-ralph` stale patch and the desktop profile not being CLI-reproducible (Electron-managed).
+
 **v5.2** · 2026-11-08 (first stable release)
 
 Compared with the last published release (v5.0.3), this version moves from "collects evidence" to "tells you what it means, and reproduces config errors itself":
